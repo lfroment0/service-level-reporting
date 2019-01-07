@@ -2,6 +2,7 @@ from typing import List, Tuple, Union
 from urllib.parse import urljoin
 
 from datetime import datetime, timedelta
+from datetime_truncate import truncate
 
 from flask_sqlalchemy import BaseQuery, Pagination
 
@@ -19,8 +20,11 @@ from app.utils import slugger
 from app.resources.product.models import Product
 from app.resources.product.api import ProductResource
 
-from .models import Indicator, IndicatorValue
+from .models import Indicator, IndicatorValue, IndicatorValueCompact
 from .updater import update_indicator_values
+
+
+COMPACTED_SLI_HEADER = 'X-Compacted-Indicator'
 
 
 class SLIResource(ResourceHandler):
@@ -149,13 +153,20 @@ class SLIValueResource(ResourceHandler):
     model_fields = ('timestamp', 'value',)
     skip_count = True
 
+    def get_model_class(self) -> Union[IndicatorValue, IndicatorValueCompact]:
+        return IndicatorValueCompact if COMPACTED_SLI_HEADER in request.headers else IndicatorValue
+
+    def get_timestamp_field(self):
+        return IndicatorValueCompact.timebucket if COMPACTED_SLI_HEADER in request.headers else IndicatorValue.timestamp
+
     def get_query(self, id: int, **kwargs) -> BaseQuery:
         Indicator.query.filter_by(id=id, is_deleted=False).first_or_404()
-        return IndicatorValue.query.filter_by(indicator_id=id).order_by(IndicatorValue.timestamp)
+        klass = self.get_model_class()
+        return klass.query.filter_by(indicator_id=id).order_by(self.get_timestamp_field())
 
     def get_filter_kwargs(self, **kwargs) -> dict:
-        min_from = kwargs.get('from', 10080)
-        min_to = kwargs.get('to')
+        min_from = int(kwargs.get('from', 10080))
+        min_to = int(kwargs.get('to', 0))
 
         now = datetime.utcnow()
         start = now - timedelta(minutes=min_from)
@@ -174,7 +185,9 @@ class SLIValueResource(ResourceHandler):
         """Filter query using query parameters"""
         end = kwargs.get('end')
         start = kwargs.get('start')
-        return query.filter(IndicatorValue.timestamp >= start, IndicatorValue.timestamp < end)
+        if self.get_model_class() is IndicatorValueCompact:
+            start = truncate(start, 'day')
+        return query.filter(self.get_timestamp_field() >= start, self.get_timestamp_field() < end)
 
     def get_limited_query(self, query: BaseQuery, **kwargs) -> Union[Pagination, BaseQuery]:
         """Apply pagination limits on query"""
@@ -184,10 +197,19 @@ class SLIValueResource(ResourceHandler):
         return super().get_limited_query(query, **kwargs)
 
     def get_objects(self, query: Union[Pagination, BaseQuery], **kwargs) -> List[IndicatorValue]:
+        result = []
         if isinstance(query, Pagination):
-            return [obj for obj in query.items]
+            result = [obj for obj in query.items]
+        else:
+            result = [obj for obj in query.all()]
 
-        return [obj for obj in query.all()]
+        ivs = []
+        if self.get_model_class() is IndicatorValueCompact:
+            for compacted_iv in result:
+                ivs += compacted_iv.get_indicator_values()
+            return ivs
+
+        return result
 
     def build_resource(self, obj: IndicatorValue, **kwargs) -> dict:
         resource = super().build_resource(obj, **kwargs)

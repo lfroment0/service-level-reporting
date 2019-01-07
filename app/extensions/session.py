@@ -22,8 +22,8 @@ def get_token_info():
 
 
 def set_token_info(token_info):
-    if (flask_session.get('user') == token_info.get('uid') and
-            flask_session.get('access_token') == token_info['access_token']):
+    if (flask_session.get('user') == token_info.get('uid') and flask_session.get(
+            'access_token') == token_info['access_token']):
         return
 
     flask_session['user'] = token_info.get('uid', '')

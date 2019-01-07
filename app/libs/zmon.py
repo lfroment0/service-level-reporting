@@ -1,3 +1,4 @@
+import math
 import fnmatch
 import logging
 import requests
@@ -11,6 +12,8 @@ from app.config import KAIROSDB_URL, KAIROS_QUERY_LIMIT
 
 
 AGG_TYPES = ('average', 'weighted', 'sum', 'min', 'max', 'minimum', 'maximum')
+
+MIN_VAL = math.expm1(1e-10)
 
 logger = logging.getLogger('slo')
 

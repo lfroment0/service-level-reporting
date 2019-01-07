@@ -862,9 +862,10 @@ def sli_delete(obj, product_name, name):
 @sli.command('values')
 @click.argument('product_name')
 @click.argument('name')
-@click.option('--count', '-c', type=int, help='Number of SLI values returned')
+@click.option('--count', '-c', type=int, help='Number of SLI values returned.')
+@click.option('--from-minutes', '-f', type=int, help='Retrurn SLI since from_minutes.')
 @click.pass_obj
-def sli_values(obj, product_name, name, count):
+def sli_values(obj, product_name, name, count, from_minutes):
     """List SLI values"""
     client = get_client(obj)
 
@@ -878,7 +879,7 @@ def sli_values(obj, product_name, name, count):
     if not slis:
         fatal_error('SLI {} does not exist'.format(name))
 
-    res = client.sli_values(slis[0], page_size=count)
+    res = client.sli_values(slis[0], page_size=count, sli_from=from_minutes)
 
     print(json.dumps(res, indent=4))
 

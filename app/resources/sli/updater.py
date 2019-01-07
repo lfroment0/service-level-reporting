@@ -1,5 +1,4 @@
 import os
-import math
 import logging
 import warnings
 import opentracing
@@ -14,13 +13,11 @@ from opentracing_utils import trace, extract_span_from_kwargs
 
 from app.config import MAX_QUERY_TIME_SLICE, UPDATER_CONCURRENCY
 from app.extensions import db
-from app.libs.zmon import query_sli
+from app.libs.zmon import query_sli, MIN_VAL
 
 from .models import IndicatorValue, Indicator
-from .models import insert_indicator_value
+from .models import insert_indicator_value, update_indicator_value_compact
 
-
-MIN_VAL = math.expm1(1e-10)
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +84,8 @@ def update_indicator_values(indicator: Indicator, start: int, end=None, **kwargs
     insert_span = opentracing.tracer.start_span(operation_name='insert_indicator_values', child_of=current_span)
     (insert_span
         .set_tag('indicator', indicator.name)
-        .set_tag('indicator_id', indicator.id))
+        .set_tag('indicator_id', indicator.id)
+        .set_tag('compact', False))
 
     insert_span.log_kv({'result_count': len(result)})
 
@@ -101,6 +99,18 @@ def update_indicator_values(indicator: Indicator, start: int, end=None, **kwargs
             iv = IndicatorValue(timestamp=minute, value=val, indicator_id=indicator.id)
             insert_indicator_value(session, iv)
 
-    session.commit()
+        session.commit()
+
+    insert_compact_span = opentracing.tracer.start_span(operation_name='insert_indicator_values', child_of=current_span)
+    (insert_compact_span
+        .set_tag('indicator', indicator.name)
+        .set_tag('indicator_id', indicator.id)
+        .set_tag('compact', True))
+
+    insert_compact_span.log_kv({'result_count': len(result)})
+
+    with insert_compact_span:
+        update_indicator_value_compact(session, indicator.id, result)
+        session.commit()
 
     return len(result)

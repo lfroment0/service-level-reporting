@@ -8,7 +8,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from datetime_truncate import truncate
 
-from connexion import ProblemException
+from connexion import ProblemException, request
 
 from opentracing.ext import tags as ot_tags
 from opentracing_utils import extract_span_from_flask_request, trace, extract_span_from_kwargs
@@ -16,11 +16,14 @@ from opentracing_utils import extract_span_from_flask_request, trace, extract_sp
 from app.libs.resource import ResourceHandler
 
 from app.resources.product.models import Product
-from app.resources.sli.models import Indicator, IndicatorValue
+from app.resources.sli.models import Indicator, IndicatorValue, IndicatorValueCompact
 from app.resources.slo.models import Objective
+from app.resources.target.models import Target
 
 
 REPORT_TYPES = ('weekly', 'monthly', 'quarterly')
+
+COMPACTED_SLI_HEADER = 'X-Compacted-Indicator'
 
 
 @trace()
@@ -33,8 +36,24 @@ def truncate_values(values: Iterator[IndicatorValue], unit='day') -> Dict[str, L
     return truncated
 
 
+@trace()
+def get_compacted_indicator_values(target: Target, start: datetime, end: datetime) -> List[IndicatorValue]:
+    compacted_ivs = (
+        IndicatorValueCompact.query
+        .filter(IndicatorValueCompact.indicator_id == target.indicator_id,
+                IndicatorValueCompact.timebucket >= start,
+                IndicatorValueCompact.timebucket < end)
+        .order_by(IndicatorValueCompact.timebucket))
+
+    ivs: List[IndicatorValue] = []
+    for compacted_iv in compacted_ivs:
+        ivs += compacted_iv.get_indicator_values()
+
+    return ivs
+
+
 def get_report_summary(objectives: Iterator[Objective], unit: str, start: datetime, end: datetime,
-                       current_span: opentracing.Span) -> List[dict]:
+                       current_span: opentracing.Span, is_compact: bool=False) -> List[dict]:
     summary = []
     start = truncate(start)
 
@@ -50,17 +69,20 @@ def get_report_summary(objectives: Iterator[Objective], unit: str, start: dateti
         # Instrument objective summary!
         objective_summary_span = opentracing.tracer.start_span(
             operation_name='report_objective_summary', child_of=current_span)
-        objective_summary_span.set_tag('objective_id', objective.id)
+        objective_summary_span.set_tag('objective_id', objective.id).set_tag('is_compact', is_compact)
 
         with objective_summary_span:
             for target in objective.targets:
                 objective_summary_span.log_kv({'target_id': target.id, 'indicator_id': target.indicator_id})
-                ivs = (
-                    IndicatorValue.query
-                    .filter(IndicatorValue.indicator_id == target.indicator_id,
-                            IndicatorValue.timestamp >= start,
-                            IndicatorValue.timestamp < end)
-                    .order_by(IndicatorValue.timestamp))
+                if is_compact:
+                    ivs = get_compacted_indicator_values(target, start, end, parent_span=objective_summary_span)
+                else:
+                    ivs = (
+                        IndicatorValue.query
+                        .filter(IndicatorValue.indicator_id == target.indicator_id,
+                                IndicatorValue.timestamp >= start,
+                                IndicatorValue.timestamp < end)
+                        .order_by(IndicatorValue.timestamp))
 
                 target_values_truncated = truncate_values(ivs, parent_span=objective_summary_span)
 
@@ -135,7 +157,10 @@ class ReportResource(ResourceHandler):
         current_span.set_tag('product_group', product.product_group.name)
         current_span.log_kv({'report_duration_start': start, 'report_duration_end': now})
 
-        slo = get_report_summary(objectives, unit, start, now, current_span)
+        # TODO: remove if we disable double writes
+        is_compact = True if COMPACTED_SLI_HEADER in request.headers else False
+
+        slo = get_report_summary(objectives, unit, start, now, current_span, is_compact=is_compact)
 
         current_span.log_kv({'report_objective_count': len(slo), 'objective_count': len(objectives)})
 
